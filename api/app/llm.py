@@ -87,7 +87,20 @@ def ask(system: str, examples: list[tuple[str, str]], user: str, schema: type[T]
 
 
 _NOT_CHAT = ("embed", "tts", "audio", "realtime", "transcribe", "image", "imagen", "veo", "whisper", "dall-e",
-             "moderation", "search", "computer-use", "live", "babbage", "davinci", "aqa")
+             "moderation", "search", "computer-use", "live", "babbage", "davinci", "aqa",
+             "lyria", "banana", "robotics", "antigravity")
+
+
+def human_error(e: Exception) -> str:
+    """Ошибка провайдера — по-человечески: что случилось и что делать."""
+    code = getattr(e, "status_code", None)
+    if code == 429:
+        return "Квота провайдера исчерпана (429). Подождите или выберите другую модель в Настройках."
+    if code in (500, 502, 503, 504):
+        return f"Модель перегружена или недоступна ({code}). Попробуйте позже или выберите другую в Настройках."
+    if code in (401, 403) or "API key" in str(e):
+        return "Провайдер не принял API-ключ. Проверьте его в Настройках."
+    return f"LLM недоступен: {type(e).__name__}"
 
 
 def list_models(cfg: dict) -> dict:

@@ -3,6 +3,7 @@
 	import { api } from '#lib/api.js';
 	import { fmtDate } from '#lib/format.js';
 	import { session } from '#lib/session.svelte.js';
+	import AskPakt from '#lib/AskPakt.svelte';
 
 	let tree = $state(null);
 	let check = $state(null);
@@ -22,6 +23,8 @@
 </script>
 
 <h1>Пакт</h1>
+
+{#if tree?.length}<AskPakt />{/if}
 
 <a class="new" href="/bills/new">{session.me.role === 'husband' ? 'Новый законопроект' : 'Подать заявку'}</a>
 

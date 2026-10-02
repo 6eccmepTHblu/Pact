@@ -14,7 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
 from sqlalchemy import select
 
-from . import journal, pakt, pipeline, push, reminders
+from . import journal, llm, pakt, pipeline, push, reminders
 from .auth import current_user, require
 from .db import get_db
 from .models import Bill, Law, LawVersion, Signature, User
@@ -268,7 +268,7 @@ def analyze(bill_id: int, user: User = Depends(require("husband")), db=Depends(g
     try:
         result = pipeline.analyze(db, bill)
     except openai.OpenAIError as e:
-        raise HTTPException(502, f"LLM недоступен: {type(e).__name__}")
+        raise HTTPException(502, llm.human_error(e))
     # prepared собирается целиком и присваивается один раз: правки JSONB на месте SQLAlchemy не видит
     prepared = to_prepared(result)
     if bill.kind == "amend":
