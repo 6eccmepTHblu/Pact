@@ -64,6 +64,9 @@
 		<a href="/bills" class:on={here('/bills')}>
 			Законопроекты{#if waiting}<span class="badge">{waiting}</span>{/if}
 		</a>
+		{#if session.me.role === 'husband'}
+			<a href="/settings" class:on={here('/settings')} class="gear" aria-label="Настройки" title="Настройки">⚙</a>
+		{/if}
 		<button class="link" onclick={logout}>Выйти</button>
 	</nav>
 {/if}
@@ -213,6 +216,13 @@
 	}
 	nav .link {
 		margin-left: auto;
+	}
+	nav .gear {
+		margin-left: auto;
+		font-size: 20px;
+	}
+	nav .gear + .link {
+		margin-left: 0;
 	}
 	.badge {
 		display: inline-block;

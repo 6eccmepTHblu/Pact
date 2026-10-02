@@ -171,3 +171,11 @@ class Reminder(Base):
     law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), unique=True)
     next_fire_at: Mapped[datetime] = mapped_column(TS)
     snoozed_until: Mapped[datetime | None] = mapped_column(TS)
+
+
+class Setting(Base):
+    """Настройки, которые меняются из интерфейса (сейчас — LLM)."""
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB)

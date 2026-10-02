@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, bills, journal, pakt, push, reminders
+from . import auth, bills, journal, pakt, push, reminders, settings
 from .db import get_db
 from .models import Journal, Law, PushSubscription, Reminder, User
 
@@ -132,6 +132,7 @@ def push_subscribe(body: SubscriptionIn, user: User = Depends(auth.current_user)
 
 app.include_router(api)
 app.include_router(bills.router)
+app.include_router(settings.router)
 
 
 @app.get("/calendar/{token}.ics")

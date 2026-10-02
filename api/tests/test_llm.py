@@ -113,7 +113,7 @@ def test_no_api_key_is_clear_error(clients, monkeypatch):
     h, _, _ = clients
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     b = ok(h.post("/api/bills", json={"kind": "new", "original_text": VASE}))
-    assert "OPENAI_API_KEY" in ok(h.post(f"/api/bills/{b['id']}/analyze"), 503)["detail"]
+    assert "API-ключ" in ok(h.post(f"/api/bills/{b['id']}/analyze"), 503)["detail"]
 
 
 def enact(h, w, text):
