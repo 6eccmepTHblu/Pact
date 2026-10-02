@@ -160,15 +160,29 @@ def _target(db: Session, bill: Bill) -> LawVersion | None:
     return db.get(LawVersion, db.get(Law, bill.target_law_id).current_version_id)
 
 
-def analyze(db: Session, bill: Bill) -> dict:
+def _hint_note(bill: Bill, hint: str | None) -> str:
+    """Повторная разметка с указанием: LLM видит текущий вариант и что в нём исправить."""
+    if not hint:
+        return ""
+    p = bill.prepared or {}
+    pl, sc = p.get("placement"), p.get("schedule")
+    fields = (("Название", p.get("title")), ("Текст", p.get("official_text")),
+              ("Место", pl and f"раздел «{pl['section']}», статья «{pl['article']}»"),
+              ("Теги", ", ".join(p.get("tags") or [])), ("Расписание", sc and f"{sc['rrule']} в {sc['time']}"))
+    current = "\n".join(f"{k}: {v}" for k, v in fields if v) or "пока нет"
+    return f"\n\nТекущий вариант:\n{current}\n\nУказание супруга, что исправить (выполни обязательно): {hint}"
+
+
+def analyze(db: Session, bill: Bill, hint: str | None = None) -> dict:
     ensure_embeddings(db)
     vec = llm.embed([bill.original_text])[0]
     target = _target(db, bill)
     context = (f"Действующий закон: {target.title}\nТекст: {target.official_text}\n\nПравка: "
                if target else "Пожелание: ")
 
+    note = _hint_note(bill, hint)
     inputs, outputs = {}, {}
-    inputs["parse"] = context + bill.original_text
+    inputs["parse"] = context + bill.original_text + note
     parsed = llm.ask(PARSE_SYS, _examples(db, "parse", vec), inputs["parse"], ParseOut)
     outputs["parse"] = parsed.model_dump()
 
@@ -179,21 +193,22 @@ def analyze(db: Session, bill: Bill) -> dict:
         sections = db.scalars(select(Section.title).order_by(Section.number)).all()
         inputs["placement"] = (f"Закон: {parsed.title}\nДействие: {parsed.action}\nОбъект: {parsed.object}\n\n"
                                f"Похожие статьи:\n{chr(10).join(lines) or 'нет'}\n\n"
-                               f"Все разделы: {', '.join(sections) or 'пока нет'}")
+                               f"Все разделы: {', '.join(sections) or 'пока нет'}{note}")
         outputs["placement"] = llm.ask(PLACE_SYS, _examples(db, "placement", vec), inputs["placement"],
                                        PlaceOut).model_dump()
 
     schedule = f"\nРасписание: {parsed.schedule.rrule} в {parsed.schedule.time}" if parsed.schedule else ""
-    inputs["official"] = f"{context}{bill.original_text}\n\nНазвание: {parsed.title}{schedule}"
+    inputs["official"] = f"{context}{bill.original_text}\n\nНазвание: {parsed.title}{schedule}{note}"
     official = llm.ask(OFFICIAL_SYS, _examples(db, "official", vec), inputs["official"], OfficialOut)
     outputs["official"] = official.model_dump()
 
-    check = llm.ask(CHECK_SYS, [], f"Пожелание: {bill.original_text}\n\nФормулировка: {official.official_text}",
-                    CheckOut)
+    clarified = f"\n\nУточнение супруга: {hint}" if hint else ""  # уточнение законно меняет смысл
+    check = llm.ask(CHECK_SYS, [],
+                    f"Пожелание: {bill.original_text}{clarified}\n\nФормулировка: {official.official_text}", CheckOut)
     warnings = [f"Возможна потеря смысла: {check.comment}"] if check.meaning_lost else []
     review_warnings, refs, review = _review(db, bill, vec, parsed.title, official.official_text)
     return {"inputs": inputs, "outputs": outputs, "check": check.model_dump(), "review": review,
-            "refs": refs, "warnings": warnings + review_warnings}
+            "refs": refs, "warnings": warnings + review_warnings, "hint": hint}
 
 
 def record_corrections(db: Session, bill: Bill) -> None:

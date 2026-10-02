@@ -61,6 +61,10 @@ class CommentIn(BaseModel):
     comment: Text
 
 
+class AnalyzeIn(BaseModel):
+    hint: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] | None = None
+
+
 Point = tuple[Annotated[float, Field(ge=0, le=4000)], Annotated[float, Field(ge=0, le=4000)]]
 
 
@@ -259,14 +263,15 @@ def save_prepared(bill_id: int, body: PreparedIn, user: User = Depends(require("
 
 
 @router.post("/{bill_id}/analyze")
-def analyze(bill_id: int, user: User = Depends(require("husband")), db=Depends(get_db)):
+def analyze(bill_id: int, body: AnalyzeIn | None = None, user: User = Depends(require("husband")),
+            db=Depends(get_db)):
     # ponytail: синхронно в запросе (10–20 с); в фон — когда появится воркер
     bill = _load(db, bill_id, user, lock=True)
     _expect(bill, "draft", "returned")
     if bill.kind == "repeal":
         raise HTTPException(409, "Упразднение не размечается")
     try:
-        result = pipeline.analyze(db, bill)
+        result = pipeline.analyze(db, bill, (body.hint or None) if body else None)
     except openai.OpenAIError as e:
         raise HTTPException(502, llm.human_error(e))
     # prepared собирается целиком и присваивается один раз: правки JSONB на месте SQLAlchemy не видит

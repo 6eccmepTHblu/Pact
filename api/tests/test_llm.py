@@ -86,6 +86,19 @@ def test_vase_from_wish_to_law(clients, fake):
     assert db.scalar(select(Correction.embedding).where(Correction.bill_id == b["id"])) is not None
 
 
+def test_reanalyze_with_hint(clients, fake):
+    h, _, _ = clients
+    b = ok(h.post("/api/bills", json={"kind": "new", "original_text": VASE}))
+    ok(h.post(f"/api/bills/{b['id']}/analyze"))
+    assert "Указание" not in fake.last("ParseOut")[2]
+    b = ok(h.post(f"/api/bills/{b['id']}/analyze", json={"hint": "  только по выходным, в раздел Дом  "}))
+    for stage in ("ParseOut", "PlaceOut", "OfficialOut"):
+        user = fake.last(stage)[2]
+        assert "Указание супруга, что исправить (выполни обязательно): только по выходным, в раздел Дом" in user
+        assert "Название: Следить за свежестью цветов в Вечной вазе" in user  # текущий вариант виден LLM
+    assert "Уточнение супруга: только по выходным" in fake.last("CheckOut")[2]
+
+
 def test_bad_schedule_dropped_with_warning(clients, fake):
     h, _, _ = clients
     fake.rrule = "каждый день"

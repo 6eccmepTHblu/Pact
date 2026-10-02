@@ -19,6 +19,8 @@
 	let comment = $state('');
 	let analyzing = $state(false);
 	let rejecting = $state(false);
+	let hintOpen = $state(false);
+	let hint = $state('');
 	let reason = $state('');
 
 	const url = (action = '') => `/bills/${page.params.id}${action}`;
@@ -64,18 +66,26 @@
 		}
 	}
 
-	const analyze = () =>
+	// rework=true — повторная разметка: сначала сохраняем ручные правки, чтобы LLM видела актуальный вариант.
+	const analyze = (hint = '', rework = false) =>
 		act(async () => {
 			analyzing = true;
 			try {
-				show(await api(url('/analyze'), { method: 'POST' }));
+				if (rework) await save();
+				show(await api(url('/analyze'), { method: 'POST', body: { hint: hint.trim() || null } }));
 			} finally {
 				analyzing = false;
 			}
 		});
 
-	const reanalyze = () =>
-		(!bill.prepared || confirm('Текущая разметка будет заменена предложением LLM. Продолжить?')) && analyze();
+	const reanalyze = () => (bill.prepared ? (hintOpen = true) : analyze());
+
+	function sendHint(e) {
+		e.preventDefault();
+		hintOpen = false;
+		analyze(hint, true);
+		hint = '';
+	}
 
 	const save = async () => show(await api(url('/prepared'), { method: 'PUT', body: toPayload(form, bill.kind) }));
 
@@ -213,10 +223,23 @@
 			{/if}
 			<button class="quiet" onclick={() => act(save)} disabled={busy}>Сохранить</button>
 			{#if bill.kind !== 'repeal'}
-				<button class="quiet" onclick={reanalyze} disabled={busy}>{bill.prepared ? 'Разметить заново' : 'Разметить'}</button>
+				<button class="quiet" onclick={reanalyze} disabled={busy || hintOpen}>{bill.prepared ? 'Разметить заново' : 'Разметить'}</button>
 			{/if}
 			<button class="link" onclick={withdraw} disabled={busy}>Отозвать</button>
 		</div>
+		{#if hintOpen}
+			<form class="hint" onsubmit={sendHint}>
+				<label>
+					Что уточнить или поправить
+					<textarea bind:value={hint} rows="3" placeholder="Например: только по выходным; короче; в раздел «Дом»"></textarea>
+				</label>
+				<p class="muted small">LLM увидит текущую разметку и ваше указание. Можно оставить пустым — тогда разметка с нуля.</p>
+				<div class="actions">
+					<button disabled={busy}>Разметить заново</button>
+					<button type="button" class="quiet" onclick={() => (hintOpen = false)}>Отмена</button>
+				</div>
+			</form>
+		{/if}
 	{:else}
 		{#if bill.kind === 'repeal'}
 			<h2>Причина</h2>
@@ -343,6 +366,19 @@
 	}
 	.return {
 		margin-top: 24px;
+	}
+	.hint {
+		margin-top: 20px;
+		padding: 12px 16px;
+		border: 1px solid var(--line);
+		background: var(--field);
+	}
+	.hint .actions {
+		margin-top: 12px;
+	}
+	.small {
+		font-size: 14px;
+		margin: 8px 0 0;
 	}
 	.analyzing {
 		padding: 12px 16px;
