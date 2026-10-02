@@ -5,6 +5,17 @@
 	import { session } from '#lib/session.svelte.js';
 
 	let bills = $state(null);
+	let error = $state('');
+
+	async function remove(b) {
+		if (!confirm(`Удалить отозванный законопроект «${b.title}»? Это нельзя отменить.`)) return;
+		try {
+			await api('/bills/' + b.id, { method: 'DELETE' });
+			bills = bills.filter((x) => x.id !== b.id);
+		} catch (e) {
+			error = e.message;
+		}
+	}
 
 	onMount(async () => {
 		bills = await api('/bills');
@@ -30,6 +41,8 @@
 
 <a class="new" href="/bills/new">{session.me.role === 'husband' ? 'Новый законопроект' : 'Подать заявку'}</a>
 
+{#if error}<p class="error" role="alert">{error}</p>{/if}
+
 {#if bills && !bills.length}
 	<p class="muted">Законопроектов пока нет.</p>
 {/if}
@@ -40,6 +53,9 @@
 		<ul>
 			{#each list as b (b.id)}
 				<li>
+					{#if b.status === 'withdrawn' && session.me.role === 'husband'}
+						<button class="del" onclick={() => remove(b)} aria-label="Удалить законопроект" title="Удалить">×</button>
+					{/if}
 					<a href="/bills/{b.id}">
 						<span class="title">
 							{#if b.number}<span class="num">{b.number}</span>{/if}
@@ -76,11 +92,25 @@
 		padding: 0;
 		list-style: none;
 	}
+	li {
+		display: flex;
+		align-items: center;
+		border-bottom: 1px solid var(--line);
+	}
+	.del {
+		order: 1;
+		min-height: 44px;
+		padding: 0 14px;
+		background: transparent;
+		border: 0;
+		color: var(--muted);
+		font-size: 22px;
+	}
 	li a {
+		flex: 1;
 		display: grid;
 		gap: 2px;
 		padding: 10px 0;
-		border-bottom: 1px solid var(--line);
 		text-decoration: none;
 	}
 	.title .num {

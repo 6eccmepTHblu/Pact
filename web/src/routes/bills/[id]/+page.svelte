@@ -130,6 +130,13 @@
 		});
 	};
 
+	const remove = () =>
+		confirm('Удалить отозванный законопроект? Это нельзя отменить.') &&
+		act(async () => {
+			await api(url(), { method: 'DELETE' });
+			goto('/bills', { replaceState: true });
+		});
+
 	const withdraw = () =>
 		confirm('Отозвать законопроект? Он останется в истории, но в работу больше не вернётся.') &&
 		act(async () => show(await api(url('/withdraw'), { method: 'POST' })));
@@ -271,6 +278,12 @@
 		{#if bill.signatures.length}
 			<div class="sigs">
 				{#each bill.signatures as sig}<SignatureView {sig} />{/each}
+			</div>
+		{/if}
+
+		{#if bill.status === 'withdrawn' && husband}
+			<div class="actions">
+				<button class="quiet" onclick={remove} disabled={busy}>Удалить законопроект</button>
 			</div>
 		{/if}
 

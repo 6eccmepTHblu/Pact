@@ -4,6 +4,7 @@ new/amend: draft|returned →submit→ pending →подпись супруги�
 repeal:    draft|returned →подпись инициатора→ partial →подпись второй стороны→ enacted
 pending|partial →return (супруга)→ returned;  draft|returned →withdraw→ withdrawn
 заявка супруги: request →accept→ draft (дальше как выше) | request →reject→ rejected
+withdrawn →delete→ (нет): только без подписей, удаление пишется в журнал
 """
 
 from datetime import UTC, datetime
@@ -12,12 +13,12 @@ from typing import Annotated, Literal
 import openai
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from . import journal, llm, pakt, pipeline, push, reminders
 from .auth import current_user, require
 from .db import get_db
-from .models import Bill, Law, LawVersion, Signature, User
+from .models import Bill, Correction, Law, LawVersion, Signature, User
 
 router = APIRouter(prefix="/api/bills")
 
@@ -309,6 +310,21 @@ def withdraw(bill_id: int, user: User = Depends(require("husband")), db=Depends(
     journal.append(db, "bill_withdrawn", user.id, f"bill:{bill.id}")
     db.commit()
     return bill_out(db, bill, user)
+
+
+@router.delete("/{bill_id}")
+def delete_bill(bill_id: int, user: User = Depends(require("husband")), db=Depends(get_db)):
+    """Удалить отозванный законопроект. Законом он не стал, поэтому принцип «законы не удаляются» не нарушен."""
+    bill = _load(db, bill_id, user, lock=True)
+    _expect(bill, "withdrawn")
+    if db.scalar(select(Signature.id).where(Signature.bill_id == bill.id).limit(1)):
+        raise HTTPException(409, "Под законопроектом есть подпись — он остаётся в истории")
+    db.execute(delete(Correction).where(Correction.bill_id == bill.id))
+    journal.append(db, "bill_deleted", user.id, f"bill:{bill.id}",
+                   {"kind": bill.kind, "text": bill.original_text[:200]})
+    db.delete(bill)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/{bill_id}/return")

@@ -1,6 +1,9 @@
 """Полный цикл законопроекта через API, в одной транзакции с откатом."""
 
+from sqlalchemy import select
+
 from app import journal
+from app.models import Journal
 
 STROKES = {"width": 300, "height": 120, "strokes": [[[10, 60], [40, 20], [80, 90], [120, 40]], [[150, 60]]]}
 
@@ -88,3 +91,25 @@ def test_full_cycle(clients):
     assert [(l["number"], l["status"]) for l in laws] == [(1, "repealed"), (2, "active"), (3, "active")]
 
     assert journal.verify(db)["ok"]
+
+
+def test_delete_withdrawn(clients):
+    h, w, db = clients
+    d = new_bill(h, "Удаление-т", "Черновики", "Передумал")
+    ok(h.delete(f"/api/bills/{d['id']}"), 409)  # сначала отозвать
+    ok(h.post(f"/api/bills/{d['id']}/withdraw"))
+    ok(w.delete(f"/api/bills/{d['id']}"), 403)
+    ok(h.delete(f"/api/bills/{d['id']}"))
+    ok(h.get(f"/api/bills/{d['id']}"), 404)
+    assert d["id"] not in [b["id"] for b in ok(h.get("/api/bills"))]
+    last = db.scalar(select(Journal.action).where(Journal.entity == f"bill:{d['id']}").order_by(Journal.seq.desc()))
+    assert last == "bill_deleted" and journal.verify(db)["ok"]
+
+    # Упразднение с подписью супруга: отозвано, но подпись неизменяема — удалить нельзя
+    b = ok(h.post(f"/api/bills/{new_bill(h, 'Удаление-т', 'Черновики', 'Закон')['id']}/submit"))
+    law_id = ok(sign(w, b))["law_id"]
+    r = ok(h.post("/api/bills", json={"kind": "repeal", "target_law_id": law_id, "original_text": "не нужен"}))
+    r = ok(sign(h, r))
+    ok(w.post(f"/api/bills/{r['id']}/return", json={"comment": "нет"}))
+    ok(h.post(f"/api/bills/{r['id']}/withdraw"))
+    assert "подпись" in ok(h.delete(f"/api/bills/{r['id']}"), 409)["detail"]
