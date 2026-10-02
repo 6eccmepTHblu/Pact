@@ -1,0 +1,50 @@
+name: pact
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pact_owner
+      POSTGRES_DB: pact
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    ports:
+      - 127.0.0.1:${DB_PORT:-5433}:5432
+    healthcheck:
+      test: pg_isready -U pact_owner -d pact
+      interval: 2s
+      retries: 30
+
+  # Миграции под владельцем БД: его пароль есть только в этом контейнере.
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg://pact_owner:${POSTGRES_PASSWORD}@db:5432/pact
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://pact_app:${APP_DB_PASSWORD}@db:5432/pact
+      SECRET_KEY: ${SECRET_KEY:?}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      HUSBAND_LOGIN: ${HUSBAND_LOGIN}
+      HUSBAND_NAME: ${HUSBAND_NAME}
+      HUSBAND_PASSWORD: ${HUSBAND_PASSWORD}
+      WIFE_LOGIN: ${WIFE_LOGIN}
+      WIFE_NAME: ${WIFE_NAME}
+      WIFE_PASSWORD: ${WIFE_PASSWORD}
+    ports:
+      - 127.0.0.1:${APP_PORT:-8200}:8000
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:
