@@ -1,8 +1,27 @@
 <script>
 	import { DAYS } from '#lib/format.js';
 
-	// form — объект из toForm(), правится на месте; tree — дерево Пакта для подсказок места.
-	let { form = $bindable(), kind, tree = [] } = $props();
+	// form — объект из toForm(), правится на месте; tree — дерево Пакта для подсказок места и ссылок.
+	let { form = $bindable(), kind, tree = [], targetId = null } = $props();
+
+	// Все действующие законы, кроме изменяемого: на них можно сослаться.
+	let laws = $derived(
+		tree.flatMap((s) =>
+			s.articles.flatMap((a) =>
+				a.laws
+					.filter((l) => l.status === 'active' && l.id !== targetId)
+					.map((l) => ({ id: l.id, label: `${s.number}.${a.number}.${l.number} ${l.title}` }))
+			)
+		)
+	);
+	let label = (id) => laws.find((l) => l.id === id)?.label ?? `закон #${id}`;
+	let addRef = $state('');
+
+	function add() {
+		const id = Number(addRef);
+		if (id && !form.refs.includes(id)) form.refs.push(id);
+		addRef = '';
+	}
 
 	let articles = $derived(
 		tree.find((s) => s.title.toLowerCase() === form.section.trim().toLowerCase())?.articles ?? []
@@ -43,6 +62,22 @@
 				{#each articles as a}<option value={a.title}></option>{/each}
 			</datalist>
 		{/if}
+
+		<div class="refs">
+			<span class="muted small">Опирается на</span>
+			{#each form.refs as id (id)}
+				<span class="chip">
+					{label(id)}
+					<button type="button" class="x" aria-label="Убрать ссылку" onclick={() => (form.refs = form.refs.filter((r) => r !== id))}>×</button>
+				</span>
+			{/each}
+			<select bind:value={addRef} onchange={add} aria-label="Добавить ссылку на закон">
+				<option value="">Добавить ссылку…</option>
+				{#each laws.filter((l) => !form.refs.includes(l.id)) as l (l.id)}
+					<option value={l.id}>{l.label}</option>
+				{/each}
+			</select>
+		</div>
 
 		<label>
 			Теги через запятую
@@ -107,6 +142,30 @@
 		padding: 0 10px;
 		border: 1px solid var(--line);
 		color: var(--ink);
+	}
+	.refs {
+		display: grid;
+		gap: 6px;
+	}
+	.small {
+		font-size: 15px;
+	}
+	.chip {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 4px 4px 4px 12px;
+		border: 1px solid var(--line);
+		background: var(--field);
+	}
+	.x {
+		min-height: 36px;
+		padding: 0 12px;
+		background: transparent;
+		color: var(--muted);
+		border: 0;
+		font-size: 20px;
 	}
 	.day input {
 		width: auto;

@@ -41,6 +41,7 @@ class Prepared(BaseModel):
     tags: list[Tag] = Field(default=[], max_length=20)
     schedule: Schedule | None = None
     placement: Placement | None = None
+    refs: list[int] = Field(default=[], max_length=30)
 
 
 class BillIn(BaseModel):
@@ -116,7 +117,10 @@ def bill_out(db, bill: Bill) -> dict:
         law = db.get(Law, bill.target_law_id)
         v = db.get(LawVersion, law.current_version_id)
         out["target"] = {"id": law.id, "number": pakt.law_number(db, law), "status": law.status,
-                         "title": v.title, "official_text": v.official_text}
+                         "title": v.title, "official_text": v.official_text,
+                         "referenced_by": pakt.referenced_by(db, law.id)}
+    out["refs"] = [pakt.law_brief(db, l) for l in db.scalars(
+        select(Law).where(Law.id.in_((bill.prepared or {}).get("refs") or [])))]
     if bill.kind == "new" and bill.status == "enacted":
         out["law_id"] = db.scalar(select(LawVersion.law_id).where(LawVersion.bill_id == bill.id))
     return out
@@ -127,7 +131,8 @@ def to_prepared(result: dict) -> dict:
     out = result["outputs"]
     placement = out.get("placement")
     raw = {**out["parse"], "official_text": out["official"]["official_text"],
-           "placement": placement and {"section": placement["section"], "article": placement["article"]}}
+           "placement": placement and {"section": placement["section"], "article": placement["article"]},
+           "refs": result.get("refs", [])}
     try:
         return Prepared.model_validate(raw).model_dump()
     except ValidationError:
@@ -138,10 +143,14 @@ def to_prepared(result: dict) -> dict:
         raise HTTPException(502, "LLM вернул разметку, которая не проходит проверку")
 
 
-def _check_complete(bill: Bill) -> None:
+def _check_complete(db, bill: Bill) -> None:
     p = bill.prepared
     if not p or (bill.kind == "new" and not p.get("placement")):
         raise HTTPException(422, "Заполните формулировку и место в Пакте")
+    refs = set(p.get("refs") or [])
+    active = set(db.scalars(select(Law.id).where(Law.id.in_(refs), Law.status == "active")))
+    if refs - active or bill.target_law_id in refs:
+        raise HTTPException(422, "Ссылаться можно только на другие действующие законы")
 
 
 @router.post("")
@@ -157,7 +166,8 @@ def create(body: BillIn, user: User = Depends(require("husband")), db=Depends(ge
         elif prepared is None:
             v = db.get(LawVersion, law.current_version_id)
             prepared = {"title": v.title, "official_text": v.official_text, "tags": v.tags,
-                        "schedule": v.schedule, "placement": None}
+                        "schedule": v.schedule, "placement": None,
+                        "refs": [r["id"] for r in pakt.refs_of(db, law.id)]}
     if prepared and body.kind == "amend":
         prepared["placement"] = None  # правка не двигает закон: номер неизменен
     bill = Bill(kind=body.kind, target_law_id=body.target_law_id, status="draft",
@@ -190,9 +200,10 @@ def save_prepared(bill_id: int, body: PreparedIn, user: User = Depends(require("
     _expect(bill, "draft", "returned")
     bill.original_text = body.original_text
     if bill.kind != "repeal" and body.prepared:
-        bill.prepared = body.prepared.model_dump()
+        prepared = body.prepared.model_dump()
         if bill.kind == "amend":
-            bill.prepared["placement"] = None
+            prepared["placement"] = None
+        bill.prepared = prepared
     db.commit()
     return bill_out(db, bill)
 
@@ -208,10 +219,14 @@ def analyze(bill_id: int, user: User = Depends(require("husband")), db=Depends(g
         result = pipeline.analyze(db, bill)
     except openai.OpenAIError as e:
         raise HTTPException(502, f"LLM недоступен: {type(e).__name__}")
-    bill.prepared = to_prepared(result)
+    # prepared собирается целиком и присваивается один раз: правки JSONB на месте SQLAlchemy не видит
+    prepared = to_prepared(result)
     if bill.kind == "amend":
-        bill.prepared["placement"] = None
-    bill.llm_result = result
+        prepared["placement"] = None
+        # правка не теряет существующие ссылки закона, LLM лишь добавляет новые
+        current = [r["id"] for r in pakt.refs_of(db, bill.target_law_id)]
+        prepared["refs"] = list(dict.fromkeys(current + prepared["refs"]))
+    bill.prepared, bill.llm_result = prepared, result
     db.commit()
     return bill_out(db, bill)
 
@@ -222,7 +237,7 @@ def submit(bill_id: int, user: User = Depends(require("husband")), db=Depends(ge
     _expect(bill, "draft", "returned")
     if bill.kind == "repeal":
         raise HTTPException(409, "Упразднение отправляется подписью инициатора")
-    _check_complete(bill)
+    _check_complete(db, bill)
     pipeline.record_corrections(db, bill)
     bill.status = "pending"
     journal.append(db, "bill_submitted", user.id, f"bill:{bill.id}", {"text_hash": pakt.text_hash(db, bill)})

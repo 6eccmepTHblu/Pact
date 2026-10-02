@@ -4,11 +4,11 @@ import hashlib
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from .journal import canonical
-from .models import Article, Bill, Law, LawVersion, Section, Signature, User
+from .models import Article, Bill, Law, LawRef, LawVersion, Section, Signature, User
 
 _STRUCTURE_LOCK = 0x9AC8  # номера выдаются строго по одному
 
@@ -62,8 +62,11 @@ def bill_content(db: Session, bill: Bill) -> dict:
                 "number": law_number(db, db.get(Law, bill.target_law_id)),
                 "reason": bill.original_text}
     p = bill.prepared or {}
-    return {"kind": bill.kind, "law_id": bill.target_law_id, "original_text": bill.original_text,
-            **{k: p.get(k) for k in ("title", "official_text", "tags", "schedule", "placement")}}
+    content = {"kind": bill.kind, "law_id": bill.target_law_id, "original_text": bill.original_text,
+               **{k: p.get(k) for k in ("title", "official_text", "tags", "schedule", "placement")}}
+    if p.get("refs"):  # только непустые: хеш подписанных до этапа 4 законов не меняется
+        content["refs"] = sorted(p["refs"])
+    return content
 
 
 def text_hash(db: Session, bill: Bill) -> str:
@@ -137,7 +140,32 @@ def enact(db: Session, bill: Bill, now: datetime) -> tuple[Law, str, dict]:
     db.add(version)
     db.flush()
     law.current_version_id = version.id
+    set_refs(db, law, p.get("refs") or [])
     return law, action, {"number": law_number(db, law), "version": version_no}
+
+
+def set_refs(db: Session, law: Law, ids: list[int]) -> None:
+    db.execute(delete(LawRef).where(LawRef.from_law_id == law.id))
+    for to in db.scalars(select(Law.id).where(Law.id.in_(ids), Law.status == "active", Law.id != law.id)):
+        db.add(LawRef(from_law_id=law.id, to_law_id=to))
+
+
+def law_brief(db: Session, law: Law) -> dict:
+    return {"id": law.id, "number": law_number(db, law), "status": law.status,
+            "title": db.get(LawVersion, law.current_version_id).title}
+
+
+def refs_of(db: Session, law_id: int) -> list[dict]:
+    """На какие законы опирается."""
+    return [law_brief(db, l) for l in db.scalars(
+        select(Law).join(LawRef, LawRef.to_law_id == Law.id).where(LawRef.from_law_id == law_id))]
+
+
+def referenced_by(db: Session, law_id: int) -> list[dict]:
+    """Какие действующие законы опираются на этот: их надо проверить при упразднении."""
+    return [law_brief(db, l) for l in db.scalars(
+        select(Law).join(LawRef, LawRef.from_law_id == Law.id)
+        .where(LawRef.to_law_id == law_id, Law.status == "active"))]
 
 
 def tree(db: Session) -> list[dict]:
@@ -186,4 +214,5 @@ def law_detail(db: Session, law: Law) -> dict:
         "section": {"number": sec.number, "title": sec.title},
         "article": {"number": art.number, "title": art.title},
         "versions": versions, "repeal": repeal,
+        "refs": refs_of(db, law.id), "referenced_by": referenced_by(db, law.id),
     }

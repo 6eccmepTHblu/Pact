@@ -12,7 +12,8 @@ export function toForm(originalText = '', p = null) {
 		monthday: parts.BYMONTHDAY ?? '',
 		time: p?.schedule?.time ?? '09:00',
 		section: p?.placement?.section ?? '',
-		article: p?.placement?.article ?? ''
+		article: p?.placement?.article ?? '',
+		refs: p?.refs ?? []
 	};
 }
 
@@ -33,7 +34,8 @@ export function toPayload(f, kind) {
 					official_text: f.official_text,
 					tags: f.tags.split(',').map((t) => t.trim()).filter(Boolean),
 					schedule,
-					placement: kind === 'new' && f.section.trim() && f.article.trim() ? { section: f.section, article: f.article } : null
+					placement: kind === 'new' && f.section.trim() && f.article.trim() ? { section: f.section, article: f.article } : null,
+					refs: f.refs
 				}
 			: null;
 	return { original_text: f.original_text, prepared };

@@ -133,6 +133,17 @@
 		</p>
 	{/if}
 
+	{#if bill.kind === 'repeal' && bill.target?.referenced_by.length && bill.status !== 'enacted'}
+		<aside class="warnings">
+			На этот закон опираются действующие законы — проверьте, не нужно ли их изменить или упразднить:
+			<ul>
+				{#each bill.target.referenced_by as l (l.id)}
+					<li><a href="/laws/{l.id}"><span class="num">{l.number}</span> {l.title}</a></li>
+				{/each}
+			</ul>
+		</aside>
+	{/if}
+
 	{#if editable}
 		{#if analyzing}
 			<p class="analyzing" role="status">Размечаю: разбор, место в Пакте, официальная редакция, проверка смысла. Обычно 10–20 секунд.</p>
@@ -142,7 +153,7 @@
 				{#each bill.warnings as w}<li>{w}</li>{/each}
 			</ul>
 		{/if}
-		<BillForm bind:form kind={bill.kind} {tree} />
+		<BillForm bind:form kind={bill.kind} {tree} targetId={bill.target?.id} />
 		<div class="actions">
 			{#if bill.kind === 'repeal'}
 				<button onclick={startSign} disabled={busy}>Подписать упразднение</button>
@@ -171,6 +182,12 @@
 				{#if p.schedule}<span>{scheduleText(p.schedule)}</span>{/if}
 				{#each p.tags as t}<span>#{t}</span>{/each}
 			</p>
+			{#if bill.refs.length}
+				<p class="muted">
+					Опирается на:
+					{#each bill.refs as l, i (l.id)}{i ? ', ' : ''}<a href="/laws/{l.id}"><span class="num">{l.number}</span> {l.title}</a>{/each}
+				</p>
+			{/if}
 			<details>
 				<summary>Исходный текст</summary>
 				<blockquote>{bill.original_text}</blockquote>
@@ -281,6 +298,13 @@
 		border: 1px dashed var(--line);
 		color: var(--muted);
 		font-style: italic;
+	}
+	.warnings :global(a) {
+		color: var(--ink);
+	}
+	aside.warnings ul {
+		margin: 8px 0 0;
+		padding-left: 20px;
 	}
 	.warnings {
 		margin: 0 0 20px;

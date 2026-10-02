@@ -21,6 +21,7 @@ class FakeLLM:
     def __init__(self):
         self.calls = []
         self.rrule = "FREQ=DAILY"
+        self.review = {"duplicates": [], "contradictions": [], "refs": []}
 
     def embed(self, texts):
         vecs = []
@@ -41,6 +42,7 @@ class FakeLLM:
                                        is_new_article=True),
             "OfficialOut": lambda: schema(official_text="Супруг ежедневно проверяет цветы в Вечной вазе."),
             "CheckOut": lambda: schema(meaning_lost=False, comment=""),
+            "ReviewOut": lambda: schema(**self.review),
         }[schema.__name__]()
 
     def last(self, name):
@@ -112,3 +114,43 @@ def test_no_api_key_is_clear_error(clients, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     b = ok(h.post("/api/bills", json={"kind": "new", "original_text": VASE}))
     assert "OPENAI_API_KEY" in ok(h.post(f"/api/bills/{b['id']}/analyze"), 503)["detail"]
+
+
+def enact(h, w, text):
+    b = ok(h.post("/api/bills", json={"kind": "new", "original_text": text}))
+    ok(h.post(f"/api/bills/{b['id']}/analyze"))
+    b = ok(h.post(f"/api/bills/{b['id']}/submit"))
+    b = ok(w.post(f"/api/bills/{b['id']}/sign", json={**STROKES, "text_hash": b["text_hash"]}))
+    return ok(w.get(f"/api/laws/{b['law_id']}"))
+
+
+def test_review_duplicates_and_refs(clients, fake):
+    h, w, _ = clients
+    a = enact(h, w, VASE)
+
+    fake.review = {"duplicates": [{"number": a["number"], "comment": "то же самое"}],
+                   "contradictions": [{"number": "9.9.9", "comment": "выдуманный номер"}],
+                   "refs": [a["number"], a["number"], "9.9.9"]}
+    b = ok(h.post("/api/bills", json={"kind": "new", "original_text": "Менять воду в Вечной вазе"}))
+    b = ok(h.post(f"/api/bills/{b['id']}/analyze"))
+    assert a["number"] in fake.last("ReviewOut")[2]
+    assert b["warnings"] == [f"Возможный дубль {a['number']} «{a['versions'][0]['title']}»: то же самое"]
+    assert b["prepared"]["refs"] == [a["id"]] and b["refs"][0]["number"] == a["number"]
+
+    b = ok(h.post(f"/api/bills/{b['id']}/submit"))
+    law_b = ok(w.get(f"/api/laws/{ok(w.post(f'/api/bills/{b['id']}/sign', json={**STROKES, 'text_hash': b['text_hash']}))['law_id']}"))
+    assert [r["id"] for r in law_b["refs"]] == [a["id"]]
+    assert [r["id"] for r in ok(w.get(f"/api/laws/{a['id']}"))["referenced_by"]] == [law_b["id"]]
+
+    # Упразднение показывает зависимые законы; правка сохраняет ссылки
+    r = ok(h.post("/api/bills", json={"kind": "repeal", "target_law_id": a["id"], "original_text": "не нужен"}))
+    assert [x["id"] for x in r["target"]["referenced_by"]] == [law_b["id"]]
+    fake.review = {"duplicates": [], "contradictions": [], "refs": []}
+    m = ok(h.post("/api/bills", json={"kind": "amend", "target_law_id": law_b["id"], "original_text": "чаще"}))
+    assert m["prepared"]["refs"] == [a["id"]]
+    assert ok(h.post(f"/api/bills/{m['id']}/analyze"))["prepared"]["refs"] == [a["id"]]
+
+    # Ссылка на несуществующий закон не пройдёт отправку
+    bad = {**m["prepared"], "refs": [999999]}
+    ok(h.put(f"/api/bills/{m['id']}/prepared", json={"original_text": "чаще", "prepared": bad}))
+    ok(h.post(f"/api/bills/{m['id']}/submit"), 422)

@@ -47,6 +47,17 @@
 		</p>
 	{/if}
 
+	{#each [['Опирается на', law.refs], ['На него опираются', law.referenced_by]] as [name, list]}
+		{#if list.length}
+			<div class="links">
+				<span class="muted">{name}</span>
+				{#each list as l (l.id)}
+					<a href="/laws/{l.id}" class:gone={l.status === 'repealed'}><span class="num">{l.number}</span> {l.title}</a>
+				{/each}
+			</div>
+		{/if}
+	{/each}
+
 	<details>
 		<summary>Исходный текст</summary>
 		<blockquote>{current.original_text}</blockquote>
@@ -108,6 +119,19 @@
 		flex-wrap: wrap;
 		gap: 8px 14px;
 		font-size: 15px;
+	}
+	.links {
+		display: grid;
+		gap: 4px;
+		margin: 12px 0;
+		font-size: 16px;
+	}
+	.links a {
+		text-decoration: none;
+	}
+	.links .gone {
+		text-decoration: line-through;
+		color: var(--muted);
 	}
 	.tag::before {
 		content: '#';

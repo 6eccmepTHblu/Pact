@@ -39,6 +39,17 @@ class CheckOut(BaseModel):
     comment: str
 
 
+class Finding(BaseModel):
+    number: str
+    comment: str
+
+
+class ReviewOut(BaseModel):
+    duplicates: list[Finding]
+    contradictions: list[Finding]
+    refs: list[str]
+
+
 PARSE_SYS = """Ты размечаешь пожелание супруги для семейного свода законов «Пакт».
 Верни:
 - title — короткое название закона с заглавной буквы, в инфинитиве, без точки. Пример: «Следить за свежестью цветов в Вечной вазе».
@@ -63,6 +74,13 @@ OFFICIAL_SYS = """Перепиши пожелание в официальную 
 CHECK_SYS = """Сравни исходное пожелание и официальную формулировку закона.
 meaning_lost = true, если формулировка теряет, искажает смысл или добавляет обязанности, которых в пожелании нет.
 comment — коротко, что именно не так; пустая строка, если всё в порядке."""
+
+
+REVIEW_SYS = """Ты проверяешь новый закон «Пакта» по действующим похожим законам.
+duplicates — законы, которые уже требуют то же самое: новый закон их повторяет.
+contradictions — законы, требования которых нельзя выполнить одновременно с новым.
+refs — законы, на которые новый закон опирается: уточняет или дополняет их, без них он непонятен. Дубль — не ссылка.
+comment — коротко, в чём дело. Используй только номера из списка. Если ничего нет, верни пустые списки."""
 
 
 def _law_text(v: LawVersion) -> str:
@@ -111,6 +129,31 @@ def _candidates(db: Session, vec, k: int = 5) -> list[dict]:
     return list(found.values())[:k]
 
 
+def _similar_laws(db: Session, vec, exclude_id: int | None, k: int = 5) -> list[tuple[Law, LawVersion]]:
+    q = (select(Law, LawVersion).join(LawVersion, LawVersion.id == Law.current_version_id)
+         .join(VersionEmbedding, VersionEmbedding.version_id == LawVersion.id)
+         .where(Law.status == "active"))
+    if exclude_id:
+        q = q.where(Law.id != exclude_id)
+    return db.execute(q.order_by(VersionEmbedding.embedding.cosine_distance(vec)).limit(k)).all()
+
+
+def _review(db: Session, bill: Bill, vec, title: str, official_text: str) -> tuple[list[str], list[int], dict]:
+    """Дубли, противоречия и ссылки среди top-5 похожих действующих законов. Ничего не блокирует."""
+    similar = _similar_laws(db, vec, bill.target_law_id)
+    if not similar:
+        return [], [], {}
+    by_number = {pakt.law_number(db, law): (law, v) for law, v in similar}
+    listing = "\n".join(f"{n} «{v.title}»: {v.official_text}" for n, (_, v) in by_number.items())
+    r = llm.ask(REVIEW_SYS, [], f"Новый закон: {title}\n{official_text}\n\nДействующие законы:\n{listing}",
+                ReviewOut)
+    warnings = [f"{label} {f.number} «{by_number[f.number][1].title}»: {f.comment}"
+                for label, found in (("Возможный дубль", r.duplicates), ("Противоречие с", r.contradictions))
+                for f in found if f.number in by_number]
+    refs = [by_number[n][0].id for n in dict.fromkeys(r.refs) if n in by_number]
+    return warnings, refs, r.model_dump()
+
+
 def _target(db: Session, bill: Bill) -> LawVersion | None:
     if not bill.target_law_id:
         return None
@@ -148,7 +191,9 @@ def analyze(db: Session, bill: Bill) -> dict:
     check = llm.ask(CHECK_SYS, [], f"Пожелание: {bill.original_text}\n\nФормулировка: {official.official_text}",
                     CheckOut)
     warnings = [f"Возможна потеря смысла: {check.comment}"] if check.meaning_lost else []
-    return {"inputs": inputs, "outputs": outputs, "check": check.model_dump(), "warnings": warnings}
+    review_warnings, refs, review = _review(db, bill, vec, parsed.title, official.official_text)
+    return {"inputs": inputs, "outputs": outputs, "check": check.model_dump(), "review": review,
+            "refs": refs, "warnings": warnings + review_warnings}
 
 
 def record_corrections(db: Session, bill: Bill) -> None:

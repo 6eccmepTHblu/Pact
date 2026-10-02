@@ -144,3 +144,11 @@ class Correction(Base):
     llm_output: Mapped[dict] = mapped_column(JSONB)
     final: Mapped[dict] = mapped_column(JSONB)
     embedding = mapped_column(Vector(EMBED_DIM))
+
+
+class LawRef(Base):
+    """Закон from опирается на закон to. Текущее состояние: правка закона заменяет его ссылки."""
+    __tablename__ = "law_refs"
+
+    from_law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), primary_key=True)
+    to_law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), primary_key=True)
