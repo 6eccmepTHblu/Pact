@@ -3,17 +3,18 @@
 new/amend: draft|returned →submit→ pending →подпись супруги→ enacted
 repeal:    draft|returned →подпись инициатора→ partial →подпись второй стороны→ enacted
 pending|partial →return (супруга)→ returned;  draft|returned →withdraw→ withdrawn
+заявка супруги: request →accept→ draft (дальше как выше) | request →reject→ rejected
 """
 
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 import openai
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
 from sqlalchemy import select
 
-from . import journal, pakt, pipeline
+from . import journal, pakt, pipeline, push, reminders
 from .auth import current_user, require
 from .db import get_db
 from .models import Bill, Law, LawVersion, Signature, User
@@ -71,12 +72,13 @@ class SignIn(BaseModel):
 
 
 WIFE_VISIBLE = ("pending", "partial", "enacted")
+HIDDEN_FROM_WIFE = ("draft", "returned", "withdrawn")  # её заявка в работе: видна, но без черновой разметки
 
 
 def _load(db, bill_id: int, user: User, lock: bool = False) -> Bill:
     q = select(Bill).where(Bill.id == bill_id)
     bill = db.scalar(q.with_for_update() if lock else q)
-    if not bill or (user.role == "wife" and bill.status not in WIFE_VISIBLE):
+    if not bill or (user.role == "wife" and bill.status not in WIFE_VISIBLE and bill.created_by != user.id):
         raise HTTPException(404, "Законопроект не найден")
     return bill
 
@@ -102,14 +104,29 @@ def _title(db, bill: Bill) -> str:
     return bill.original_text[:80]
 
 
-def bill_brief(db, bill: Bill) -> dict:
-    return {"id": bill.id, "kind": bill.kind, "status": bill.status, "title": _title(db, bill),
-            "number": pakt.preview_number(db, bill), "updated_at": bill.updated_at}
+def _redacted(bill: Bill, user: User | None) -> bool:
+    return user is not None and user.role == "wife" and bill.status in HIDDEN_FROM_WIFE
 
 
-def bill_out(db, bill: Bill) -> dict:
-    out = {**bill_brief(db, bill), "original_text": bill.original_text, "prepared": bill.prepared,
-           "wife_comment": bill.wife_comment, "created_at": bill.created_at,
+def bill_brief(db, bill: Bill, user: User | None = None) -> dict:
+    hidden = _redacted(bill, user)
+    return {"id": bill.id, "kind": bill.kind, "status": bill.status,
+            "mine": user is not None and bill.created_by == user.id,
+            "title": bill.original_text[:80] if hidden else _title(db, bill),
+            "number": None if hidden and bill.kind == "new" else pakt.preview_number(db, bill),
+            "updated_at": bill.updated_at}
+
+
+def bill_out(db, bill: Bill, user: User | None = None) -> dict:
+    out = _bill_out(db, bill, user)
+    if _redacted(bill, user):
+        out.update(prepared=None, refs=[], warnings=[])
+    return out
+
+
+def _bill_out(db, bill: Bill, user: User | None) -> dict:
+    out = {**bill_brief(db, bill, user), "original_text": bill.original_text, "prepared": bill.prepared,
+           "wife_comment": bill.wife_comment, "reject_reason": bill.reject_reason, "created_at": bill.created_at,
            "text_hash": pakt.text_hash(db, bill), "target": None, "law_id": bill.target_law_id,
            "signatures": pakt.signatures_of(db, bill),
            "warnings": (bill.llm_result or {}).get("warnings", []) if bill.status in ("draft", "returned") else []}
@@ -154,8 +171,9 @@ def _check_complete(db, bill: Bill) -> None:
 
 
 @router.post("")
-def create(body: BillIn, user: User = Depends(require("husband")), db=Depends(get_db)):
-    prepared = body.prepared.model_dump() if body.prepared else None
+def create(body: BillIn, bg: BackgroundTasks, user: User = Depends(current_user), db=Depends(get_db)):
+    request = user.role == "wife"  # супруга подаёт заявку, супруг создаёт черновик
+    prepared = body.prepared.model_dump() if body.prepared and not request else None
     if body.kind == "new":
         if body.target_law_id:
             raise HTTPException(422, "У нового закона нет целевого закона")
@@ -163,35 +181,67 @@ def create(body: BillIn, user: User = Depends(require("husband")), db=Depends(ge
         law = _active_law(db, body.target_law_id)
         if body.kind == "repeal":
             prepared = None
-        elif prepared is None:
+        elif prepared is None and not request:
             v = db.get(LawVersion, law.current_version_id)
             prepared = {"title": v.title, "official_text": v.official_text, "tags": v.tags,
                         "schedule": v.schedule, "placement": None,
                         "refs": [r["id"] for r in pakt.refs_of(db, law.id)]}
     if prepared and body.kind == "amend":
         prepared["placement"] = None  # правка не двигает закон: номер неизменен
-    bill = Bill(kind=body.kind, target_law_id=body.target_law_id, status="draft",
+    bill = Bill(kind=body.kind, target_law_id=body.target_law_id, status="request" if request else "draft",
                 original_text=body.original_text, prepared=prepared, created_by=user.id)
     db.add(bill)
     db.flush()
-    journal.append(db, "bill_created", user.id, f"bill:{bill.id}", {"kind": bill.kind})
+    journal.append(db, "request_submitted" if request else "bill_created", user.id, f"bill:{bill.id}",
+                   {"kind": bill.kind})
     db.commit()
-    return bill_out(db, bill)
+    if request:
+        push.notify(bg, ["husband"], "Подана заявка", bill.original_text, f"/bills/{bill.id}")
+    return bill_out(db, bill, user)
+
+
+@router.post("/{bill_id}/accept")
+def accept(bill_id: int, user: User = Depends(require("husband")), db=Depends(get_db)):
+    bill = _load(db, bill_id, user, lock=True)
+    _expect(bill, "request")
+    if bill.kind != "new":
+        law = _active_law(db, bill.target_law_id)
+        if bill.kind == "amend":  # правка начинается с действующей редакции
+            v = db.get(LawVersion, law.current_version_id)
+            bill.prepared = {"title": v.title, "official_text": v.official_text, "tags": v.tags,
+                             "schedule": v.schedule, "placement": None,
+                             "refs": [r["id"] for r in pakt.refs_of(db, law.id)]}
+    bill.status = "draft"
+    journal.append(db, "request_accepted", user.id, f"bill:{bill.id}")
+    db.commit()
+    return bill_out(db, bill, user)
+
+
+@router.post("/{bill_id}/reject")
+def reject(bill_id: int, body: CommentIn, bg: BackgroundTasks, user: User = Depends(require("husband")),
+           db=Depends(get_db)):
+    bill = _load(db, bill_id, user, lock=True)
+    _expect(bill, "request")
+    bill.status, bill.reject_reason = "rejected", body.comment
+    journal.append(db, "request_rejected", user.id, f"bill:{bill.id}", {"reason": body.comment})
+    db.commit()
+    push.notify(bg, ["wife"], "Заявка отклонена", body.comment, f"/bills/{bill.id}")
+    return bill_out(db, bill, user)
 
 
 @router.get("")
 def list_bills(status: str | None = None, user: User = Depends(current_user), db=Depends(get_db)):
     q = select(Bill).order_by(Bill.updated_at.desc())
     if user.role == "wife":
-        q = q.where(Bill.status.in_(WIFE_VISIBLE))
+        q = q.where(Bill.status.in_(WIFE_VISIBLE) | (Bill.created_by == user.id))
     if status:
         q = q.where(Bill.status.in_(status.split(",")))
-    return [bill_brief(db, b) for b in db.scalars(q)]
+    return [bill_brief(db, b, user) for b in db.scalars(q)]
 
 
 @router.get("/{bill_id}")
 def get_bill(bill_id: int, user: User = Depends(current_user), db=Depends(get_db)):
-    return bill_out(db, _load(db, bill_id, user))
+    return bill_out(db, _load(db, bill_id, user), user)
 
 
 @router.put("/{bill_id}/prepared")
@@ -205,7 +255,7 @@ def save_prepared(bill_id: int, body: PreparedIn, user: User = Depends(require("
             prepared["placement"] = None
         bill.prepared = prepared
     db.commit()
-    return bill_out(db, bill)
+    return bill_out(db, bill, user)
 
 
 @router.post("/{bill_id}/analyze")
@@ -228,11 +278,11 @@ def analyze(bill_id: int, user: User = Depends(require("husband")), db=Depends(g
         prepared["refs"] = list(dict.fromkeys(current + prepared["refs"]))
     bill.prepared, bill.llm_result = prepared, result
     db.commit()
-    return bill_out(db, bill)
+    return bill_out(db, bill, user)
 
 
 @router.post("/{bill_id}/submit")
-def submit(bill_id: int, user: User = Depends(require("husband")), db=Depends(get_db)):
+def submit(bill_id: int, bg: BackgroundTasks, user: User = Depends(require("husband")), db=Depends(get_db)):
     bill = _load(db, bill_id, user, lock=True)
     _expect(bill, "draft", "returned")
     if bill.kind == "repeal":
@@ -242,7 +292,8 @@ def submit(bill_id: int, user: User = Depends(require("husband")), db=Depends(ge
     bill.status = "pending"
     journal.append(db, "bill_submitted", user.id, f"bill:{bill.id}", {"text_hash": pakt.text_hash(db, bill)})
     db.commit()
-    return bill_out(db, bill)
+    push.notify(bg, ["wife"], "Законопроект на подписи", _title(db, bill), f"/bills/{bill.id}")
+    return bill_out(db, bill, user)
 
 
 @router.post("/{bill_id}/withdraw")
@@ -252,21 +303,23 @@ def withdraw(bill_id: int, user: User = Depends(require("husband")), db=Depends(
     bill.status = "withdrawn"
     journal.append(db, "bill_withdrawn", user.id, f"bill:{bill.id}")
     db.commit()
-    return bill_out(db, bill)
+    return bill_out(db, bill, user)
 
 
 @router.post("/{bill_id}/return")
-def return_bill(bill_id: int, body: CommentIn, user: User = Depends(require("wife")), db=Depends(get_db)):
+def return_bill(bill_id: int, body: CommentIn, bg: BackgroundTasks, user: User = Depends(require("wife")),
+                db=Depends(get_db)):
     bill = _load(db, bill_id, user, lock=True)
     _expect(bill, "pending", "partial")
     bill.status, bill.wife_comment = "returned", body.comment
     journal.append(db, "bill_returned", user.id, f"bill:{bill.id}", {"comment": body.comment})
     db.commit()
-    return bill_out(db, bill)
+    push.notify(bg, ["husband"], "Законопроект возвращён с правками", body.comment, f"/bills/{bill.id}")
+    return bill_out(db, bill, user)
 
 
 @router.post("/{bill_id}/sign")
-def sign(bill_id: int, body: SignIn, user: User = Depends(current_user), db=Depends(get_db)):
+def sign(bill_id: int, body: SignIn, bg: BackgroundTasks, user: User = Depends(current_user), db=Depends(get_db)):
     bill = _load(db, bill_id, user, lock=True)
     # Кто и когда подписывает. Упразднение по заявке супруги (этап 5) тоже начинает супруг.
     if bill.kind == "repeal":
@@ -296,7 +349,14 @@ def sign(bill_id: int, body: SignIn, user: User = Depends(current_user), db=Depe
         law, action, payload = pakt.enact(db, bill, now)
         bill.status = "enacted"
         journal.append(db, action, user.id, f"law:{law.id}", {**payload, "bill_id": bill.id})
+        reminders.sync(db, law, now)
     else:
         bill.status = "partial"
     db.commit()
-    return bill_out(db, bill)
+    if final:
+        title = {"law_enacted": "Закон вступил в силу", "law_amended": "Новая редакция вступила в силу",
+                 "law_repealed": "Закон упразднён"}[action]
+        push.notify(bg, ["husband", "wife"], title, f"{payload['number']} {_title(db, bill)}", f"/laws/{law.id}")
+    else:
+        push.notify(bg, ["wife"], "Упразднение ждёт подписи", _title(db, bill), f"/bills/{bill.id}")
+    return bill_out(db, bill, user)

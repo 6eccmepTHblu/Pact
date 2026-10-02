@@ -152,3 +152,22 @@ class LawRef(Base):
 
     from_law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), primary_key=True)
     to_law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), primary_key=True)
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    endpoint: Mapped[str] = mapped_column(unique=True)
+    keys: Mapped[dict] = mapped_column(JSONB)
+
+
+class Reminder(Base):
+    """Очередь напоминаний: одна строка на действующий закон с расписанием."""
+    __tablename__ = "reminders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    law_id: Mapped[int] = mapped_column(ForeignKey("laws.id"), unique=True)
+    next_fire_at: Mapped[datetime] = mapped_column(TS)
+    snoozed_until: Mapped[datetime | None] = mapped_column(TS)

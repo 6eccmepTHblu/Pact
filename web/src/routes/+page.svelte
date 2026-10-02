@@ -6,6 +6,7 @@
 
 	let tree = $state(null);
 	let check = $state(null);
+	let copied = $state(false);
 
 	onMount(async () => {
 		tree = await api('/pakt');
@@ -22,9 +23,7 @@
 
 <h1>Пакт</h1>
 
-{#if session.me.role === 'husband'}
-	<a class="new" href="/bills/new">Новый законопроект</a>
-{/if}
+<a class="new" href="/bills/new">{session.me.role === 'husband' ? 'Новый законопроект' : 'Подать заявку'}</a>
 
 {#if tree && !tree.length}
 	<p class="muted">В Пакте пока нет законов.</p>
@@ -51,6 +50,16 @@
 		{/each}
 	</section>
 {/each}
+
+{#if session.me.calendar}
+	<p class="calendar muted">
+		Календарь с расписаниями законов:
+		<a href={'webcal://' + location.host + session.me.calendar}>подписаться</a> ·
+		<button class="link" onclick={() => navigator.clipboard.writeText(location.origin + session.me.calendar).then(() => (copied = true))}>
+			{copied ? 'ссылка скопирована' : 'скопировать ссылку'}
+		</button>
+	</p>
+{/if}
 
 {#if session.me.role === 'husband'}
 	<footer>
@@ -116,8 +125,12 @@
 		display: block;
 		padding-left: calc(3.2em + 10px);
 	}
-	footer {
+	.calendar {
 		margin-top: 48px;
+		font-size: 15px;
+	}
+	footer {
+		margin-top: 16px;
 		font-size: 15px;
 		display: flex;
 		gap: 12px;

@@ -31,7 +31,7 @@ services:
   app:
     build: .
     restart: unless-stopped
-    environment:
+    environment: &app-env
       DATABASE_URL: postgresql+psycopg://pact_app:${APP_DB_PASSWORD}@db:5432/pact
       SECRET_KEY: ${SECRET_KEY:?}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
@@ -45,8 +45,21 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
       EMBED_MODEL: ${EMBED_MODEL:-text-embedding-3-small}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      CALENDAR_TOKEN: ${CALENDAR_TOKEN:-}
     ports:
       - 127.0.0.1:${APP_PORT:-8200}:8000
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  # Напоминания раз в минуту.
+  worker:
+    build: .
+    restart: unless-stopped
+    command: python -m app.worker
+    environment: *app-env
     depends_on:
       migrate: { condition: service_completed_successfully }
 

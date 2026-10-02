@@ -29,7 +29,7 @@ def test_full_cycle(clients):
     b = new_bill(h, "Цветы-тест", "Вечная ваза", "Следить за цветами")
     assert b["status"] == "draft" and b["number"].endswith(".1.1")
     ok(w.get(f"/api/bills/{b['id']}"), 404)
-    ok(w.post("/api/bills", json={"kind": "new", "original_text": "x"}), 403)
+    assert ok(w.post("/api/bills", json={"kind": "new", "original_text": "x"}))["status"] == "request"
     ok(sign(w, b), 404)  # черновик супруге не виден
     b = ok(h.post(f"/api/bills/{b['id']}/submit"))
     assert b["status"] == "pending"

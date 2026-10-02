@@ -4,9 +4,31 @@
 	import { page } from '$app/state';
 	import { api } from '#lib/api.js';
 	import { session } from '#lib/session.svelte.js';
+	import { pushSupported, subscribe } from '#lib/push.js';
 
 	let { children } = $props();
 	let waiting = $state(0);
+	let askPush = $state(false);
+	let pushError = $state('');
+
+	// Разрешение уже есть — тихо переподписываемся (тот же телефон мог сменить учётную запись).
+	$effect(() => {
+		const key = session.me?.vapid_key;
+		if (!key || !pushSupported()) return;
+		if (Notification.permission === 'granted') subscribe(key).catch(() => {});
+		else askPush = Notification.permission === 'default';
+	});
+
+	async function enablePush() {
+		pushError = '';
+		try {
+			if ((await Notification.requestPermission()) !== 'granted') throw new Error('Уведомления запрещены в настройках браузера');
+			await subscribe(session.me.vapid_key);
+			askPush = false;
+		} catch (err) {
+			pushError = err.message;
+		}
+	}
 
 	onMount(async () => {
 		if (page.url.pathname === '/login') return;
@@ -21,7 +43,7 @@
 	$effect(() => {
 		if (!session.me) return;
 		page.url.pathname; // пересчитывать при переходах
-		const status = session.me.role === 'wife' ? 'pending,partial' : 'returned';
+		const status = session.me.role === 'wife' ? 'pending,partial' : 'returned,request';
 		api('/bills?status=' + status)
 			.then((list) => (waiting = list.length))
 			.catch(() => {});
@@ -47,6 +69,13 @@
 {/if}
 
 <main>
+	{#if askPush && session.me}
+		<div class="push">
+			<span>Включите уведомления: подписи, заявки{session.me.role === 'husband' ? ', напоминания' : ''}.</span>
+			<button class="quiet" onclick={enablePush}>Включить</button>
+			{#if pushError}<span class="error">{pushError}</span>{/if}
+		</div>
+	{/if}
 	{#if session.me || page.url.pathname === '/login'}
 		{@render children()}
 	{/if}
@@ -196,6 +225,17 @@
 		font-size: 13px;
 		line-height: 20px;
 		text-align: center;
+	}
+	.push {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px 12px;
+		margin-bottom: 20px;
+		padding: 10px 14px;
+		border: 1px solid var(--line);
+		background: var(--field);
+		font-size: 15px;
 	}
 	main {
 		max-width: 640px;

@@ -1,7 +1,8 @@
 <script>
 	import { page } from '$app/state';
 	import { api } from '#lib/api.js';
-	import { fmtDate, scheduleText } from '#lib/format.js';
+	import { fmtDate, fmtDateTime, scheduleText } from '#lib/format.js';
+	import { api as call } from '#lib/api.js';
 	import { session } from '#lib/session.svelte.js';
 	import SignatureView from '#lib/SignatureView.svelte';
 
@@ -14,6 +15,20 @@
 			.then((l) => (law = l))
 			.catch((e) => (error = e.message));
 	});
+
+	let marking = $state(false);
+
+	async function markDone() {
+		marking = true;
+		try {
+			await call(`/laws/${law.id}/done`, { method: 'POST' });
+			law = await call('/laws/' + law.id);
+		} catch (e) {
+			error = e.message;
+		} finally {
+			marking = false;
+		}
+	}
 
 	let current = $derived(law?.versions[0]);
 	let history = $derived(law?.versions.slice(1) ?? []);
@@ -74,10 +89,22 @@
 		{/if}
 	</p>
 
-	{#if session.me.role === 'husband' && law.status === 'active'}
+	{#if law.done.length}
+		<p class="muted small">Исполнено: {law.done.slice(0, 5).map(fmtDateTime).join(', ')}{law.done.length > 5 ? '…' : ''}</p>
+	{/if}
+
+	{#if law.status === 'active'}
 		<div class="actions">
-			<a class="btn" href="/bills/new?kind=amend&law={law.id}">Подготовить правку</a>
-			<a class="btn quiet" href="/bills/new?kind=repeal&law={law.id}">Упразднить</a>
+			{#if session.me.role === 'husband'}
+				{#if current.schedule}
+					<button onclick={markDone} disabled={marking}>Отметить исполнение</button>
+				{/if}
+				<a class="btn quiet" href="/bills/new?kind=amend&law={law.id}">Подготовить правку</a>
+				<a class="btn quiet" href="/bills/new?kind=repeal&law={law.id}">Упразднить</a>
+			{:else}
+				<a class="btn quiet" href="/bills/new?kind=amend&law={law.id}">Попросить правку</a>
+				<a class="btn quiet" href="/bills/new?kind=repeal&law={law.id}">Попросить упразднить</a>
+			{/if}
 		</div>
 	{/if}
 

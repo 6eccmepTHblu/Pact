@@ -1,4 +1,4 @@
-"""python -m app.cli create-users | verify | last-hash | reembed"""
+"""python -m app.cli create-users | verify | last-hash | reembed | vapid-keys"""
 
 import json
 import os
@@ -57,7 +57,22 @@ def reembed() -> None:
     print("готово")
 
 
-COMMANDS = {"create-users": create_users, "verify": verify, "last-hash": last_hash, "reembed": reembed}
+def vapid_keys() -> None:
+    """Строки для .env: ключи VAPID для Web Push (P-256, base64url)."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+    key = ec.generate_private_key(ec.SECP256R1())
+    print("VAPID_PRIVATE_KEY=" + b64(key.private_numbers().private_value.to_bytes(32, "big")))
+    print("VAPID_PUBLIC_KEY=" + b64(key.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
+
+
+COMMANDS = {"create-users": create_users, "verify": verify, "last-hash": last_hash, "reembed": reembed,
+            "vapid-keys": vapid_keys}
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:

@@ -1,7 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { api } from '#lib/api.js';
-	import { KIND, STATUS, fmtDate } from '#lib/format.js';
+	import { KIND, fmtDate, statusFor } from '#lib/format.js';
 	import { session } from '#lib/session.svelte.js';
 
 	let bills = $state(null);
@@ -14,7 +14,7 @@
 	const mine = (b) =>
 		session.me.role === 'wife'
 			? ['pending', 'partial'].includes(b.status)
-			: ['draft', 'returned'].includes(b.status);
+			: ['request', 'draft', 'returned'].includes(b.status);
 	const done = (b) => ['enacted', 'withdrawn', 'rejected'].includes(b.status);
 
 	let groups = $derived(
@@ -28,9 +28,7 @@
 
 <h1>Законопроекты</h1>
 
-{#if session.me.role === 'husband'}
-	<a class="new" href="/bills/new">Новый законопроект</a>
-{/if}
+<a class="new" href="/bills/new">{session.me.role === 'husband' ? 'Новый законопроект' : 'Подать заявку'}</a>
 
 {#if bills && !bills.length}
 	<p class="muted">Законопроектов пока нет.</p>
@@ -47,7 +45,7 @@
 							{#if b.number}<span class="num">{b.number}</span>{/if}
 							{b.title}
 						</span>
-						<small class="muted">{KIND[b.kind]} · <span class="st {b.status}">{STATUS[b.status]}</span> · {fmtDate(b.updated_at)}</small>
+						<small class="muted">{KIND[b.kind]} · <span class="st {b.status}">{statusFor(session.me.role, b.status)}</span> · {fmtDate(b.updated_at)}</small>
 					</a>
 				</li>
 			{/each}
@@ -92,6 +90,7 @@
 		font-size: 14px;
 	}
 	.st.returned,
+	.st.request,
 	.st.pending,
 	.st.partial {
 		color: var(--seal);

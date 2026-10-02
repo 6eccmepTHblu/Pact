@@ -40,4 +40,9 @@ export const STATUS = {
 	rejected: 'Отклонена'
 };
 
+// Как статус видит супруга, подавшая заявку.
+export const WIFE_STATUS = { ...STATUS, draft: 'В работе у супруга', returned: 'В работе у супруга', request: 'Заявка подана' };
+
+export const statusFor = (role, s) => (role === 'wife' ? WIFE_STATUS : STATUS)[s];
+
 export const KIND = { new: 'Новый закон', amend: 'Правка', repeal: 'Упразднение' };

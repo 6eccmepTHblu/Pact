@@ -2,7 +2,7 @@
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '#lib/api.js';
-	import { KIND, STATUS, scheduleText } from '#lib/format.js';
+	import { KIND, scheduleText, statusFor } from '#lib/format.js';
 	import { toForm, toPayload } from '#lib/billForm.js';
 	import { session } from '#lib/session.svelte.js';
 	import BillForm from '#lib/BillForm.svelte';
@@ -18,6 +18,8 @@
 	let returning = $state(false);
 	let comment = $state('');
 	let analyzing = $state(false);
+	let rejecting = $state(false);
+	let reason = $state('');
 
 	const url = (action = '') => `/bills/${page.params.id}${action}`;
 	let husband = $derived(session.me.role === 'husband');
@@ -103,6 +105,21 @@
 		});
 	};
 
+	// Взять заявку в работу и сразу разметить (упразднение не размечается).
+	const accept = () =>
+		act(async () => {
+			show(await api(url('/accept'), { method: 'POST' }));
+			if (bill.kind !== 'repeal') analyze();
+		});
+
+	const sendReject = (e) => {
+		e.preventDefault();
+		act(async () => {
+			show(await api(url('/reject'), { method: 'POST', body: { comment: reason } }));
+			rejecting = false;
+		});
+	};
+
 	const withdraw = () =>
 		confirm('Отозвать законопроект? Он останется в истории, но в работу больше не вернётся.') &&
 		act(async () => show(await api(url('/withdraw'), { method: 'POST' })));
@@ -112,14 +129,43 @@
 
 {#if bill}
 	<p class="muted kicker">
-		{KIND[bill.kind]} · <span class="st">{STATUS[bill.status]}</span>
+		{KIND[bill.kind]} · <span class="st">{statusFor(session.me.role, bill.status)}</span>
 		{#if bill.number}
 			· {bill.kind === 'new' && bill.status !== 'enacted' ? 'предварительно ' : ''}<span class="num">{bill.number}</span>
 		{/if}
 	</p>
 	<h1>{bill.title}</h1>
 
-	{#if bill.status === 'returned' && bill.wife_comment}
+	{#if bill.status === 'rejected' && bill.reject_reason}
+		<aside class="comment">
+			<strong>Причина отказа</strong>
+			<p>{bill.reject_reason}</p>
+		</aside>
+	{/if}
+
+	{#if bill.status === 'request'}
+		<h2>{husband ? 'Заявка супруги' : 'Ваша заявка'}</h2>
+		<p class="text">{bill.original_text}</p>
+		{#if husband}
+			{#if rejecting}
+				<form class="return" onsubmit={sendReject}>
+					<label>
+						Почему отклоняется
+						<textarea bind:value={reason} required></textarea>
+					</label>
+					<div class="actions">
+						<button disabled={busy}>Отклонить</button>
+						<button type="button" class="quiet" onclick={() => (rejecting = false)}>Отмена</button>
+					</div>
+				</form>
+			{:else}
+				<div class="actions">
+					<button onclick={accept} disabled={busy}>Взять в работу</button>
+					<button class="quiet" onclick={() => (rejecting = true)}>Отклонить</button>
+				</div>
+			{/if}
+		{/if}
+	{:else if bill.status === 'returned' && bill.wife_comment && husband}
 		<aside class="comment">
 			<strong>Комментарий супруги</strong>
 			<p>{bill.wife_comment}</p>
@@ -144,7 +190,12 @@
 		</aside>
 	{/if}
 
-	{#if editable}
+	{#if bill.status === 'request' || bill.status === 'rejected'}
+		<!-- заявка показана выше -->
+	{:else if !husband && !bill.prepared && bill.kind !== 'repeal'}
+		<p class="muted">Супруг готовит законопроект по вашей заявке:</p>
+		<blockquote>{bill.original_text}</blockquote>
+	{:else if editable}
 		{#if analyzing}
 			<p class="analyzing" role="status">Размечаю: разбор, место в Пакте, официальная редакция, проверка смысла. Обычно 10–20 секунд.</p>
 		{/if}
