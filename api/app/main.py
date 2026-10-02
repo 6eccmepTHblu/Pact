@@ -6,9 +6,9 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, journal
+from . import auth, bills, journal, pakt
 from .db import get_db
-from .models import User
+from .models import Law, User
 
 app = FastAPI(title="Пакт", docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
 api = APIRouter(prefix="/api")
@@ -61,7 +61,21 @@ def journal_verify(_: User = Depends(auth.require("husband")), db=Depends(get_db
     return journal.verify(db)
 
 
+@api.get("/pakt")
+def pakt_tree(_: User = Depends(auth.current_user), db=Depends(get_db)):
+    return pakt.tree(db)
+
+
+@api.get("/laws/{law_id}")
+def get_law(law_id: int, _: User = Depends(auth.current_user), db=Depends(get_db)):
+    law = db.get(Law, law_id)
+    if not law:
+        raise HTTPException(404, "Закон не найден")
+    return pakt.law_detail(db, law)
+
+
 app.include_router(api)
+app.include_router(bills.router)
 
 
 class SPA(StaticFiles):

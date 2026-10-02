@@ -1,26 +1,9 @@
-"""Нужна поднятая БД: docker compose up -d db migrate
-Запуск из api/: uv run --env-file ../.env pytest
-Всё выполняется в транзакциях с откатом, данные БД не меняются."""
-
-import os
-
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
-
-def _url(user: str, password_var: str) -> str:
-    port = os.environ.get("DB_PORT", "5433")
-    return f"postgresql+psycopg://{user}:{os.environ[password_var]}@127.0.0.1:{port}/pact"
-
-
-os.environ.setdefault("DATABASE_URL", _url("pact_app", "APP_DB_PASSWORD"))
-
-from app import journal  # noqa: E402
-
-app_engine = create_engine(_url("pact_app", "APP_DB_PASSWORD"))
-owner_engine = create_engine(_url("pact_owner", "POSTGRES_PASSWORD"))
+from app import journal
 
 
 def _session(engine):
@@ -29,7 +12,7 @@ def _session(engine):
     return conn, Session(bind=conn)
 
 
-def test_chain_ok_and_tamper_detected():
+def test_chain_ok_and_tamper_detected(owner_engine):
     conn, db = _session(owner_engine)
     try:
         a = journal.append(db, "test", payload={"n": 1, "текст": "ваза"})
@@ -46,11 +29,13 @@ def test_chain_ok_and_tamper_detected():
         conn.close()
 
 
-@pytest.mark.parametrize("sql", ["UPDATE journal SET action = 'x'", "DELETE FROM journal"])
-def test_app_role_cannot_rewrite_journal(sql):
+@pytest.mark.parametrize("sql", [
+    "UPDATE journal SET action = 'x'", "DELETE FROM journal",
+    "UPDATE signatures SET svg = ''", "DELETE FROM law_versions", "DELETE FROM laws",
+])
+def test_app_role_cannot_rewrite_history(app_engine, sql):
     conn, db = _session(app_engine)
     try:
-        journal.append(db, "test")
         with pytest.raises(ProgrammingError, match="permission denied"):
             db.execute(text(sql))
     finally:

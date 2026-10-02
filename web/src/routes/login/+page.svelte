@@ -1,6 +1,7 @@
 <script>
 	import { goto } from '$app/navigation';
 	import { api } from '#lib/api.js';
+	import { session } from '#lib/session.svelte.js';
 
 	let login = $state('');
 	let password = $state('');
@@ -12,7 +13,7 @@
 		busy = true;
 		error = '';
 		try {
-			await api('/auth/login', { method: 'POST', body: { login, password } });
+			session.me = await api('/auth/login', { method: 'POST', body: { login, password } });
 			goto('/', { replaceState: true });
 		} catch (err) {
 			error = err.message;

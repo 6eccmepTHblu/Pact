@@ -6,7 +6,12 @@ export async function api(path, { method = 'GET', body } = {}) {
 	});
 	const data = await res.json().catch(() => ({}));
 	if (!res.ok) {
-		const msg = typeof data.detail === 'string' ? data.detail : 'Ошибка сервера';
+		const msg =
+			typeof data.detail === 'string'
+				? data.detail
+				: Array.isArray(data.detail)
+					? 'Проверьте заполнение полей'
+					: 'Ошибка сервера';
 		throw Object.assign(new Error(msg), { status: res.status });
 	}
 	return data;

@@ -18,12 +18,12 @@ GENESIS = "0" * 64
 _LOCK = 0x9AC7  # ключ advisory lock: записи идут строго по одной
 
 
-def _canonical(obj) -> str:
+def canonical(obj) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def compute_hash(r: Journal) -> str:
-    body = _canonical({
+    body = canonical({
         "seq": r.seq,
         "ts": r.ts.astimezone(UTC).isoformat(),
         "actor_id": r.actor_id,
