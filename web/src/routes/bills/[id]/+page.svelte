@@ -1,5 +1,5 @@
 <script>
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '#lib/api.js';
 	import { KIND, STATUS, scheduleText } from '#lib/format.js';
@@ -17,6 +17,7 @@
 	let signing = $state(false);
 	let returning = $state(false);
 	let comment = $state('');
+	let analyzing = $state(false);
 
 	const url = (action = '') => `/bills/${page.params.id}${action}`;
 	let husband = $derived(session.me.role === 'husband');
@@ -36,7 +37,16 @@
 	}
 
 	$effect(() => {
-		api(url()).then(show).catch((e) => (error = e.message));
+		api(url())
+			.then((b) => {
+				show(b);
+				// Пришли со страницы создания с «Разметить»: запускаем конвейер сразу.
+				if (page.url.searchParams.has('analyze')) {
+					replaceState(url(), {});
+					analyze();
+				}
+			})
+			.catch((e) => (error = e.message));
 		if (husband) api('/pakt').then((t) => (tree = t));
 	});
 
@@ -51,6 +61,19 @@
 			busy = false;
 		}
 	}
+
+	const analyze = () =>
+		act(async () => {
+			analyzing = true;
+			try {
+				show(await api(url('/analyze'), { method: 'POST' }));
+			} finally {
+				analyzing = false;
+			}
+		});
+
+	const reanalyze = () =>
+		(!bill.prepared || confirm('Текущая разметка будет заменена предложением LLM. Продолжить?')) && analyze();
 
 	const save = async () => show(await api(url('/prepared'), { method: 'PUT', body: toPayload(form, bill.kind) }));
 
@@ -111,6 +134,14 @@
 	{/if}
 
 	{#if editable}
+		{#if analyzing}
+			<p class="analyzing" role="status">Размечаю: разбор, место в Пакте, официальная редакция, проверка смысла. Обычно 10–20 секунд.</p>
+		{/if}
+		{#if bill.warnings.length}
+			<ul class="warnings">
+				{#each bill.warnings as w}<li>{w}</li>{/each}
+			</ul>
+		{/if}
 		<BillForm bind:form kind={bill.kind} {tree} />
 		<div class="actions">
 			{#if bill.kind === 'repeal'}
@@ -119,6 +150,9 @@
 				<button onclick={submit} disabled={busy}>Отправить на подпись</button>
 			{/if}
 			<button class="quiet" onclick={() => act(save)} disabled={busy}>Сохранить</button>
+			{#if bill.kind !== 'repeal'}
+				<button class="quiet" onclick={reanalyze} disabled={busy}>{bill.prepared ? 'Разметить заново' : 'Разметить'}</button>
+			{/if}
 			<button class="link" onclick={withdraw} disabled={busy}>Отозвать</button>
 		</div>
 	{:else}
@@ -241,6 +275,19 @@
 	}
 	.return {
 		margin-top: 24px;
+	}
+	.analyzing {
+		padding: 12px 16px;
+		border: 1px dashed var(--line);
+		color: var(--muted);
+		font-style: italic;
+	}
+	.warnings {
+		margin: 0 0 20px;
+		padding: 12px 16px 12px 32px;
+		border-left: 3px solid var(--seal);
+		background: var(--field);
+		color: var(--seal);
 	}
 	.floating {
 		position: fixed;

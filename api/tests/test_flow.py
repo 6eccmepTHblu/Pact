@@ -1,37 +1,8 @@
 """Полный цикл законопроекта через API, в одной транзакции с откатом."""
 
-import os
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
-
 from app import journal
-from app.db import get_db
-from app.main import app
 
 STROKES = {"width": 300, "height": 120, "strokes": [[[10, 60], [40, 20], [80, 90], [120, 40]], [[150, 60]]]}
-
-
-@pytest.fixture
-def clients(app_engine):
-    conn = app_engine.connect()
-    outer = conn.begin()
-    # commit() внутри эндпоинтов закрывает лишь savepoint, внешняя транзакция откатывается
-    db = Session(bind=conn, join_transaction_mode="create_savepoint")
-    app.dependency_overrides[get_db] = lambda: db
-    result = {}
-    for role in ("husband", "wife"):
-        c = TestClient(app)
-        r = c.post("/api/auth/login", json={"login": os.environ[f"{role.upper()}_LOGIN"],
-                                            "password": os.environ[f"{role.upper()}_PASSWORD"]})
-        assert r.status_code == 200, r.text
-        result[role] = c
-    yield result["husband"], result["wife"], db
-    app.dependency_overrides.clear()
-    db.close()
-    outer.rollback()
-    conn.close()
 
 
 def ok(r, code=200):

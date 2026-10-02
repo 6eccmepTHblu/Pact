@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -118,3 +119,28 @@ class Signature(Base):
     svg_hash: Mapped[str] = mapped_column(String(64))
     text_hash: Mapped[str] = mapped_column(String(64))
     signed_at: Mapped[datetime] = mapped_column(TS)
+
+
+EMBED_DIM = 1536  # text-embedding-3-small; другая модель с иной размерностью — новая миграция
+
+
+class VersionEmbedding(Base):
+    """Эмбеддинг редакции закона. Отдельно от law_versions: те неизменяемы, а эмбеддинги пересчитываются."""
+    __tablename__ = "version_embeddings"
+
+    version_id: Mapped[int] = mapped_column(ForeignKey("law_versions.id"), primary_key=True)
+    embedding = mapped_column(Vector(EMBED_DIM), nullable=False)
+
+
+class Correction(Base):
+    """Пара «предложение LLM → итог супруга» для few-shot."""
+    __tablename__ = "corrections"
+    __table_args__ = (UniqueConstraint("bill_id", "stage"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bill_id: Mapped[int] = mapped_column(ForeignKey("bills.id"))
+    stage: Mapped[str]
+    input: Mapped[str]
+    llm_output: Mapped[dict] = mapped_column(JSONB)
+    final: Mapped[dict] = mapped_column(JSONB)
+    embedding = mapped_column(Vector(EMBED_DIM))

@@ -5,7 +5,9 @@
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 
 def _url(user: str, password_var: str) -> str:
@@ -25,3 +27,27 @@ def app_engine():
 @pytest.fixture(scope="session")
 def owner_engine():
     return create_engine(_url("pact_owner", "POSTGRES_PASSWORD"))
+
+
+@pytest.fixture
+def clients(app_engine):
+    from app.db import get_db
+    from app.main import app
+
+    conn = app_engine.connect()
+    outer = conn.begin()
+    # commit() внутри эндпоинтов закрывает лишь savepoint, внешняя транзакция откатывается
+    db = Session(bind=conn, join_transaction_mode="create_savepoint")
+    app.dependency_overrides[get_db] = lambda: db
+    result = {}
+    for role in ("husband", "wife"):
+        c = TestClient(app)
+        r = c.post("/api/auth/login", json={"login": os.environ[f"{role.upper()}_LOGIN"],
+                                            "password": os.environ[f"{role.upper()}_PASSWORD"]})
+        assert r.status_code == 200, r.text
+        result[role] = c
+    yield result["husband"], result["wife"], db
+    app.dependency_overrides.clear()
+    db.close()
+    outer.rollback()
+    conn.close()

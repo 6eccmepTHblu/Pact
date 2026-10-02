@@ -8,11 +8,12 @@ pending|partial →return (супруга)→ returned;  draft|returned →withd
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
+import openai
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
 from sqlalchemy import select
 
-from . import journal, pakt
+from . import journal, pakt, pipeline
 from .auth import current_user, require
 from .db import get_db
 from .models import Bill, Law, LawVersion, Signature, User
@@ -109,7 +110,8 @@ def bill_out(db, bill: Bill) -> dict:
     out = {**bill_brief(db, bill), "original_text": bill.original_text, "prepared": bill.prepared,
            "wife_comment": bill.wife_comment, "created_at": bill.created_at,
            "text_hash": pakt.text_hash(db, bill), "target": None, "law_id": bill.target_law_id,
-           "signatures": pakt.signatures_of(db, bill)}
+           "signatures": pakt.signatures_of(db, bill),
+           "warnings": (bill.llm_result or {}).get("warnings", []) if bill.status in ("draft", "returned") else []}
     if bill.target_law_id:
         law = db.get(Law, bill.target_law_id)
         v = db.get(LawVersion, law.current_version_id)
@@ -118,6 +120,22 @@ def bill_out(db, bill: Bill) -> dict:
     if bill.kind == "new" and bill.status == "enacted":
         out["law_id"] = db.scalar(select(LawVersion.law_id).where(LawVersion.bill_id == bill.id))
     return out
+
+
+def to_prepared(result: dict) -> dict:
+    """Предложение конвейера в формате prepared. Невалидное расписание отбрасывается с предупреждением."""
+    out = result["outputs"]
+    placement = out.get("placement")
+    raw = {**out["parse"], "official_text": out["official"]["official_text"],
+           "placement": placement and {"section": placement["section"], "article": placement["article"]}}
+    try:
+        return Prepared.model_validate(raw).model_dump()
+    except ValidationError:
+        result["warnings"].append(f"Расписание не распознано: {out['parse']['schedule']}")
+    try:
+        return Prepared.model_validate({**raw, "schedule": None}).model_dump()
+    except ValidationError:
+        raise HTTPException(502, "LLM вернул разметку, которая не проходит проверку")
 
 
 def _check_complete(bill: Bill) -> None:
@@ -179,6 +197,25 @@ def save_prepared(bill_id: int, body: PreparedIn, user: User = Depends(require("
     return bill_out(db, bill)
 
 
+@router.post("/{bill_id}/analyze")
+def analyze(bill_id: int, user: User = Depends(require("husband")), db=Depends(get_db)):
+    # ponytail: синхронно в запросе (10–20 с); в фон — когда появится воркер
+    bill = _load(db, bill_id, user, lock=True)
+    _expect(bill, "draft", "returned")
+    if bill.kind == "repeal":
+        raise HTTPException(409, "Упразднение не размечается")
+    try:
+        result = pipeline.analyze(db, bill)
+    except openai.OpenAIError as e:
+        raise HTTPException(502, f"LLM недоступен: {type(e).__name__}")
+    bill.prepared = to_prepared(result)
+    if bill.kind == "amend":
+        bill.prepared["placement"] = None
+    bill.llm_result = result
+    db.commit()
+    return bill_out(db, bill)
+
+
 @router.post("/{bill_id}/submit")
 def submit(bill_id: int, user: User = Depends(require("husband")), db=Depends(get_db)):
     bill = _load(db, bill_id, user, lock=True)
@@ -186,6 +223,7 @@ def submit(bill_id: int, user: User = Depends(require("husband")), db=Depends(ge
     if bill.kind == "repeal":
         raise HTTPException(409, "Упразднение отправляется подписью инициатора")
     _check_complete(bill)
+    pipeline.record_corrections(db, bill)
     bill.status = "pending"
     journal.append(db, "bill_submitted", user.id, f"bill:{bill.id}", {"text_hash": pakt.text_hash(db, bill)})
     db.commit()

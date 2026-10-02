@@ -4,34 +4,28 @@
 	import { page } from '$app/state';
 	import { api } from '#lib/api.js';
 	import { KIND } from '#lib/format.js';
-	import { toForm, toPayload } from '#lib/billForm.js';
-	import BillForm from '#lib/BillForm.svelte';
 
 	const kind = page.url.searchParams.get('kind') ?? 'new';
 	const lawId = Number(page.url.searchParams.get('law')) || null;
 
-	let tree = $state([]);
 	let law = $state(null);
-	let form = $state(toForm());
+	let text = $state('');
 	let error = $state('');
 	let busy = $state(false);
 
 	onMount(async () => {
-		tree = await api('/pakt');
-		if (lawId) {
-			law = await api('/laws/' + lawId);
-			// Правка начинается с действующей редакции.
-			if (kind === 'amend') form = toForm('', { ...law.versions[0], placement: null });
-		}
+		if (lawId) law = await api('/laws/' + lawId);
 	});
 
-	async function create(e) {
-		e.preventDefault();
+	async function create(analyze) {
 		busy = true;
 		error = '';
 		try {
-			const bill = await api('/bills', { method: 'POST', body: { kind, target_law_id: lawId, ...toPayload(form, kind) } });
-			goto('/bills/' + bill.id, { replaceState: true });
+			const bill = await api('/bills', {
+				method: 'POST',
+				body: { kind, target_law_id: lawId, original_text: text }
+			});
+			goto(`/bills/${bill.id}${analyze ? '?analyze=1' : ''}`, { replaceState: true });
 		} catch (err) {
 			error = err.message;
 			busy = false;
@@ -44,12 +38,19 @@
 	<p class="muted"><span class="num">{law.number}</span> {law.versions[0].title}</p>
 {/if}
 
-<form onsubmit={create}>
-	<BillForm bind:form {kind} {tree} />
+<form onsubmit={(e) => (e.preventDefault(), create(kind !== 'repeal'))}>
+	<label>
+		{kind === 'repeal' ? 'Причина упразднения' : kind === 'amend' ? 'Что изменить' : 'Пожелание, как есть'}
+		<textarea bind:value={text} required rows="5"></textarea>
+	</label>
 	{#if error}<p class="error">{error}</p>{/if}
 	<div class="actions">
-		<button disabled={busy}>Создать черновик</button>
-		<button type="button" class="quiet" onclick={() => history.back()}>Отмена</button>
+		{#if kind === 'repeal'}
+			<button disabled={busy}>Создать черновик</button>
+		{:else}
+			<button disabled={busy}>Разметить</button>
+			<button type="button" class="quiet" disabled={busy || !text.trim()} onclick={() => create(false)}>Заполнить вручную</button>
+		{/if}
 	</div>
 </form>
 
